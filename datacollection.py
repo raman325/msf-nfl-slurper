@@ -1,8 +1,9 @@
-from datetime import date
+from datetime import datetime, timedelta
 import json
 import logging
 import os
 import time
+from typing import Any, Dict, Tuple, List
 
 from const import TOKEN
 import dateutil.parser
@@ -26,7 +27,9 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
-def get_filename(feed, season, additional_params=None):
+def get_filename(
+    feed: str, season: str, additional_params: Dict[str, str] = None
+) -> str:
     filename = f"season.{season}--feed.{feed}"
     if additional_params:
         for k, v in additional_params.items():
@@ -39,7 +42,12 @@ def get_filename(feed, season, additional_params=None):
         return f"{filename}.json"
 
 
-def get_feeds(feeds, season, additional_params=None):
+def get_feeds(
+    feeds: List[str],
+    season: str,
+    additional_params: Dict[str, str] = None,
+    additional_params_to_try: List[Dict[str, str]] = None,
+) -> List[Dict[str, str]]:
     errors = []
     params = BASE_PARAMS.copy()
     params["season"] = season
@@ -74,9 +82,21 @@ def get_feeds(feeds, season, additional_params=None):
                         time.sleep(SLEEP_TIME * pow(retry, 2))
                         retry += 1
                     elif status == 400:
-                        logger.warning(f"Malformed request. Skip download of {desc}")
-
-                        retry = -1
+                        if additional_params_to_try:
+                            for try_params in additional_params_to_try:
+                                logger.warning(
+                                    f"Malformed request. Trying download of {desc} using alternate params {try_params}"
+                                )
+                                if not get_feeds([feed], season, try_params):
+                                    retry = 0
+                                    break
+                                else:
+                                    retry = -1
+                        else:
+                            logger.warning(
+                                f"Malformed request. Skip download of {desc}"
+                            )
+                            retry = -1
                     else:
                         raise e
             if retry == -1 or not data:
@@ -91,21 +111,70 @@ def get_feeds(feeds, season, additional_params=None):
     return errors
 
 
-def get_game_id(game):
+def get_game_ids(game: Dict[str, Any]) -> Tuple[str, str, str]:
     game_date_raw = dateutil.parser.isoparse(game["schedule"]["startTime"]).astimezone(
         pytz.timezone("US/Eastern")
     )
     game_date = game_date_raw.strftime("%Y%m%d")
+    plusone_game_date = (game_date_raw + timedelta(days=1)).strftime("%Y%m%d")
+    minusone_game_date = (game_date_raw - timedelta(days=1)).strftime("%Y%m%d")
     game_away_team = game["schedule"]["awayTeam"]["abbreviation"]
     game_home_team = game["schedule"]["homeTeam"]["abbreviation"]
-    return f"{game_date}-{game_away_team}-{game_home_team}"
+    return (
+        f"{game_date}-{game_away_team}-{game_home_team}",
+        f"{plusone_game_date}-{game_away_team}-{game_home_team}",
+        f"{minusone_game_date}-{game_away_team}-{game_home_team}",
+    )
 
 
-def get_full_season_data(start_year=START_YEAR):
-    now = date.today()
-    next_full_season_year = now.year if now.month < 9 else now.year - 1
+def get_game_file(feed: str, season: str, game: Dict[str, Any]) -> str:
+    (game_id, plusone_game_id, minusone_game_id) = get_game_ids(game)
+    game_file = get_filename(feed, season, {"game": game_id})
+    plusone_game_file = get_filename(feed, season, {"game": plusone_game_id})
+    minusone_game_file = get_filename(feed, season, {"game": minusone_game_id})
+    if os.path.isfile(game_file):
+        return game_file
+    elif os.path.isfile(plusone_game_file):
+        return plusone_game_file
+    else:
+        return minusone_game_file
 
-    for year in range(start_year, next_full_season_year):
+
+def delete_weekly_feeds_for_season(season: str) -> None:
+    week_feeds_to_delete = []
+    for filename in os.listdir("."):
+        if "--week." in filename and f"season.{season}" in filename:
+            week_feeds_to_delete += filename
+
+    if week_feeds_to_delete:
+        logger.warning(f"Deleting all weekly feeds for {season} season")
+        for filename in week_feeds_to_delete:
+            os.remove(filename)
+        logger.warning(f"Done deleting all weekly feeds for {season} season")
+
+
+def delete_games_for_season_and_feed(season: str, feed: str) -> None:
+    game_feeds_to_delete = []
+    for filename in os.listdir("."):
+        if (
+            "--game." in filename
+            and f"season.{season}" in filename
+            and f"feed.{feed}" in filename
+        ):
+            game_feeds_to_delete += filename
+
+    if game_feeds_to_delete:
+        logger.warning(f"Deleting all {feed} game feeds for {season} season")
+        for filename in game_feeds_to_delete:
+            os.remove(filename)
+        logger.warning(f"Done deleting all {feed} game feeds for {season} season")
+
+
+def get_full_season_data(start_year: int = START_YEAR) -> None:
+    now = datetime.today()
+    next_full_season_start_year = now.year if now.month > 2 else now.year - 1
+
+    for year in range(start_year, next_full_season_start_year):
         season = f"{year}-{year + 1}-regular"
         logger.warning(f"Downloading data for {season} season")
         if not get_feeds(SEASONAL_FEEDS + [SEASONAL_GAME_FEED], season):
@@ -117,7 +186,15 @@ def get_full_season_data(start_year=START_YEAR):
                         games = json.load(fp)["games"]
                     errors = []
                     for game in games:
-                        errors += get_feeds([feed], season, {"game": get_game_id(game)})
+                        (game_id, plusone_game_id, minusone_game_id) = get_game_ids(
+                            game
+                        )
+                        errors += get_feeds(
+                            [feed],
+                            season,
+                            {"game": game_id},
+                            [{"game": plusone_game_id}, {"game": minusone_game_id}],
+                        )
 
                     if not errors:
                         logger.warning(
@@ -126,10 +203,7 @@ def get_full_season_data(start_year=START_YEAR):
                         logger.warning(f"Generating {feed_file}")
                         data_list = []
                         for game in games:
-                            game_file = get_filename(
-                                feed, season, {"game": get_game_id(game)}
-                            )
-                            with open(game_file, "r") as fp:
+                            with open(get_game_file(feed, season, game), "r") as fp:
                                 game_dict = json.load(fp)
 
                             data_list.append(game_dict)
@@ -141,18 +215,9 @@ def get_full_season_data(start_year=START_YEAR):
                             json.dump(data_list, fp, indent=2)
                         logger.warning(f"Done generating {feed_file}")
 
-                        logger.warning(
-                            f"Deleting all {feed} game feeds for {season} season"
-                        )
-                        for game in games:
-                            game_file = get_filename(
-                                feed, season, {"game": get_game_id(game)}
-                            )
-                            if os.path.isfile(game_file):
-                                os.remove(game_file)
-                        logger.warning(
-                            f"Done deleting all {feed} game feeds for {season} season"
-                        )
+                        delete_games_for_season_and_feed(season, feed)
+                        delete_weekly_feeds_for_season(season)
+
                     else:
                         error_file = get_filename(feed, season, {"errors": ""})
                         if os.path.isfile(error_file):
@@ -170,12 +235,13 @@ def get_full_season_data(start_year=START_YEAR):
             logger.warning(f"Could not download all seasonal data for {season} season")
 
 
-def get_data_for_week(week, year_season_starts=None):
-    if not year_season_starts:
-        now = date.today()
-        year_season_starts = now.year if now.month > 8 else now.year - 1
+def get_data_for_week(week: int, season_start_year: int = None) -> None:
+    week = str(week)
+    if not season_start_year:
+        now = datetime.today()
+        season_start_year = now.year if now.month > 8 else now.year - 1
 
-    season = f"{year_season_starts}-{year_season_starts + 1}-regular"
+    season = f"{season_start_year}-{season_start_year + 1}-regular"
     logger.warning(f"Downloading data for week {week} of {season} season")
     if not get_feeds([WEEKLY_GAME_FEED], season, {"week": week}):
         for feed in BY_GAME_FEEDS:
@@ -185,12 +251,18 @@ def get_data_for_week(week, year_season_starts=None):
                     f"Downloading {feed} game feeds for week {week} of {season} season"
                 )
                 with open(
-                    get_filename(SEASONAL_GAME_FEED, season, {"week": week}), "r"
+                    get_filename(WEEKLY_GAME_FEED, season, {"week": week}), "r"
                 ) as fp:
                     games = json.load(fp)["games"]
                 errors = []
                 for game in games:
-                    errors += get_feeds([feed], season, {"game": get_game_id(game)})
+                    (game_id, plusone_game_id, minusone_game_id) = get_game_ids(game)
+                    errors += get_feeds(
+                        [feed],
+                        season,
+                        {"game": game_id},
+                        [{"game": plusone_game_id}, {"game": minusone_game_id}],
+                    )
 
                 if not errors:
                     logger.warning(
@@ -199,10 +271,7 @@ def get_data_for_week(week, year_season_starts=None):
                     logger.warning(f"Generating {feed_file}")
                     data_list = []
                     for game in games:
-                        game_file = get_filename(
-                            feed, season, {"game": get_game_id(game)}
-                        )
-                        with open(game_file, "r") as fp:
+                        with open(get_game_file(feed, season, game), "r") as fp:
                             game_dict = json.load(fp)
 
                         data_list.append(game_dict)
@@ -232,4 +301,5 @@ def get_data_for_week(week, year_season_starts=None):
         logger.warning(f"Could not download all data for week {week} {season} season")
 
 
-get_full_season_data()
+# get_full_season_data()
+get_data_for_week(16, 2019)
