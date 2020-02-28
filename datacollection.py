@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, Tuple, List
+from typing import Any, Dict, List, Tuple
 
 from const import TOKEN
 import dateutil.parser
@@ -301,5 +301,4 @@ def get_data_for_week(week: int, season_start_year: int = None) -> None:
         logger.warning(f"Could not download all data for week {week} {season} season")
 
 
-# get_full_season_data()
-get_data_for_week(16, 2019)
+get_full_season_data()
