@@ -33,7 +33,8 @@ def get_filename(
     filename = f"season.{season}--feed.{feed}"
     if additional_params:
         for k, v in additional_params.items():
-            filename += f'--{k}.{v}' if k and v else f'--{k}{v}'
+            filename += f"--{k}.{v}" if k and v else f"--{k}{v}"
+
     return f"{filename}.json"
 
 
