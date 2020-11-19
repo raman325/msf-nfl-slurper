@@ -93,6 +93,11 @@ def get_feeds(
                                 f"Malformed request. Skip download of {desc}"
                             )
                             retry = -1
+                    elif status == 403:
+                        logger.warning(
+                            f"Unauthorized request. Skip download of {desc}"
+                        )
+                        retry = -1
                     else:
                         raise e
             if retry == -1 or not data:
