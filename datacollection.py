@@ -5,10 +5,11 @@ import os
 import time
 from typing import Any, Dict, List, Tuple
 
-from const import TOKEN
 import dateutil.parser
 from ohmysportsfeedspy import MySportsFeeds
 import pytz
+
+from const import TOKEN
 
 START_YEAR = 2014
 SLEEP_TIME = 10
@@ -94,9 +95,7 @@ def get_feeds(
                             )
                             retry = -1
                     elif status == 403:
-                        logger.warning(
-                            f"Unauthorized request. Skip download of {desc}"
-                        )
+                        logger.warning(f"Unauthorized request. Skip download of {desc}")
                         retry = -1
                     else:
                         raise e
